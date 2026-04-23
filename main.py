@@ -2,29 +2,29 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass
-from typing import ClassVar, Dict, Iterator, Mapping, Union, overload
+from typing import ClassVar, Dict, Iterator, Mapping, Union
 from pathlib import Path
 import gzip
 from statistics import mean
+import logging
+import argparse
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.SeqUtils import gc_fraction
 
 SliceOrInt = Union[slice, int]
 
+# Настройка логирования в файл
+logging.basicConfig(
+    filename="fastq_filter.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    encoding="utf-8"
+)
 
 @dataclass(frozen=True, slots=True)
 class BiologicalSequence(ABC):
-    """
-    Abstract class for biological sequences.
-    
-    Provides:
-    - len(seq_obj) support
-    - indexing and slicing: seq_obj[i], seq_obj[i:j:k]
-    - pretty printing: str(seq_obj)
-    - alphabet validation: check_alphabet()
-    """
-    
+    """Abstract class for biological sequences."""
     _content: str
 
     def __post_init__(self) -> None:
@@ -33,9 +33,7 @@ class BiologicalSequence(ABC):
         if len(self._content) == 0:
             raise ValueError("Sequence cannot be empty")
         if not self.check_alphabet():
-            raise ValueError(
-                f"Invalid characters for {self.__class__.__name__}: {self._content!r}"
-            )
+            raise ValueError(f"Invalid characters for {self.__class__.__name__}: {self._content!r}")
 
     def __len__(self) -> int:
         return len(self._content)
@@ -56,25 +54,10 @@ class BiologicalSequence(ABC):
 
     @abstractmethod
     def check_alphabet(self) -> bool:
-        """Validate sequence symbols against its alphabet"""
         raise NotImplementedError
 
 
 class NucleicAcidSequence(BiologicalSequence, ABC):
-    """
-    Base class for nucleic acids (DNA/RNA).
-    
-    Implements:
-    - check_alphabet()
-    - complement()
-    - reverse()
-    - reverse_complement()
-    
-    Polymorphism achieved by class-variables:
-    - _allowed_chars
-    - _base_pairs
-    """
-    
     _allowed_chars: ClassVar[frozenset[str]]
     _base_pairs: ClassVar[Mapping[str, str]]
 
@@ -84,24 +67,18 @@ class NucleicAcidSequence(BiologicalSequence, ABC):
 
     def check_alphabet(self) -> bool:
         if self.__class__ is NucleicAcidSequence:
-            raise NotImplementedError(
-                "NucleicAcidSequence is abstract; use DNASequence or RNASequence"
-            )
+            raise NotImplementedError("NucleicAcidSequence is abstract; use DNASequence or RNASequence")
         return set(self._content).issubset(self._allowed_chars)
 
     def complement(self) -> NucleicAcidSequence:
         if self.__class__ is NucleicAcidSequence:
-            raise NotImplementedError(
-                "NucleicAcidSequence is abstract; use DNASequence or RNASequence"
-            )
+            raise NotImplementedError("NucleicAcidSequence is abstract; use DNASequence or RNASequence")
         paired = "".join(self._base_pairs[base] for base in self._content)
         return self.__class__(paired)
 
     def reverse(self) -> NucleicAcidSequence:
         if self.__class__ is NucleicAcidSequence:
-            raise NotImplementedError(
-                "NucleicAcidSequence is abstract; use DNASequence or RNASequence"
-            )
+            raise NotImplementedError("NucleicAcidSequence is abstract; use DNASequence or RNASequence")
         return self.__class__(self._content[::-1])
 
     def reverse_complement(self) -> NucleicAcidSequence:
@@ -110,40 +87,21 @@ class NucleicAcidSequence(BiologicalSequence, ABC):
 
 class DNASequence(NucleicAcidSequence):
     _allowed_chars: ClassVar[frozenset[str]] = frozenset({"A", "T", "G", "C"})
-    _base_pairs: ClassVar[Mapping[str, str]] = {
-        "A": "T",
-        "T": "A",
-        "G": "C",
-        "C": "G",
-    }
+    _base_pairs: ClassVar[Mapping[str, str]] = {"A": "T", "T": "A", "G": "C", "C": "G"}
 
     def transcribe(self) -> RNASequence:
-        """Transcribe DNA to RNA (T → U)"""
         return RNASequence(self._content.replace("T", "U"))
 
 
 class RNASequence(NucleicAcidSequence):
     _allowed_chars: ClassVar[frozenset[str]] = frozenset({"A", "U", "G", "C"})
-    _base_pairs: ClassVar[Mapping[str, str]] = {
-        "A": "U",
-        "U": "A",
-        "G": "C",
-        "C": "G",
-    }
+    _base_pairs: ClassVar[Mapping[str, str]] = {"A": "U", "U": "A", "G": "C", "C": "G"}
 
 
 class AminoAcidSequence(BiologicalSequence):
-    """
-    Protein sequence (amino acids).
-    """
-    
     _allowed_chars: ClassVar[frozenset[str]] = frozenset(
-        {
-            "A", "C", "D", "E", "F",
-            "G", "H", "I", "K", "L",
-            "M", "N", "P", "Q", "R",
-            "S", "T", "V", "W", "Y",
-        }
+        {"A", "C", "D", "E", "F", "G", "H", "I", "K", "L",
+         "M", "N", "P", "Q", "R", "S", "T", "V", "W", "Y"}
     )
 
     def __post_init__(self) -> None:
@@ -154,30 +112,16 @@ class AminoAcidSequence(BiologicalSequence):
         return set(self._content).issubset(self._allowed_chars)
 
     def get_aa_composition(self) -> Dict[str, int]:
-        """
-        Returns amino acid composition (counts of each residue).
-        """
         return dict(Counter(self._content))
 
 
 def _open_file_with_gzip_support(filepath: Path, mode: str):
-    """
-    Open plain text or gzipped file depending on extension.
-    
-    mode: 'rt' for reading, 'wt' for writing (text modes)
-    """
     if filepath.suffix == ".gz":
         return gzip.open(filepath, mode)
     return filepath.open(mode)
 
 
 def _parse_range_constraints(constraints, low_default: float, high_default: float) -> tuple[float, float]:
-    """
-    Normalize range constraints that may be:
-    - None → (low_default, high_default)
-    - single number → (low_default, number)
-    - tuple/list (low, high) → (low, high)
-    """
     if constraints is None:
         return low_default, high_default
     if isinstance(constraints, (int, float)):
@@ -194,22 +138,14 @@ def filter_fastq(
     length_constraints=(0, 2**32),
     quality_cutoff: float = 0.0,
 ) -> dict:
-    """
-    Filter reads from FASTQ file by:
-    - GC fraction (0..1), inclusive
-    - read length, inclusive
-    - mean Phred quality score, inclusive
     
-    Uses Biopython (SeqIO, SeqRecord, SeqUtils).
-    Writes filtered reads to destination_file.
-    Creates '.../filtered/<basename>' structure.
-    
-    Returns summary dictionary with statistics.
-    """
     src_path = Path(source_file)
     dst_path_raw = Path(destination_file)
 
-    # Create output directory structure
+    if not src_path.exists():
+        logging.error(f"Input file not found: {src_path}")
+        raise FileNotFoundError(f"Source file does not exist: {src_path}")
+
     output_directory = dst_path_raw.parent / "filtered"
     output_directory.mkdir(parents=True, exist_ok=True)
     final_path = output_directory / dst_path_raw.name
@@ -237,6 +173,8 @@ def filter_fastq(
 
         return True
 
+    logging.info(f"Starting FASTQ filtering for {src_path}")
+    
     with _open_file_with_gzip_support(src_path, "rt") as input_handle, \
          _open_file_with_gzip_support(final_path, "wt") as output_handle:
         
@@ -250,7 +188,6 @@ def filter_fastq(
                 passed_count += 1
                 batch.append(record)
 
-                # Write in batches to reduce memory usage
                 if len(batch) >= 1000:
                     write_records(batch, output_handle, "fastq")
                     batch.clear()
@@ -258,7 +195,7 @@ def filter_fastq(
         if batch:
             write_records(batch, output_handle, "fastq")
 
-    return {
+    stats = {
         "input_fastq": str(src_path),
         "output_fastq": str(final_path),
         "total_reads": total_count,
@@ -269,3 +206,34 @@ def filter_fastq(
         "length_range": (int(len_min), int(len_max)),
         "quality_cutoff": quality_cutoff,
     }
+    
+    logging.info(f"Filtering complete. Passed: {passed_count}/{total_count}")
+    return stats
+
+def main():
+    parser = argparse.ArgumentParser(description="Filter FASTQ files based on GC content, length, and quality.")
+    parser.add_argument("-i", "--input", required=True, help="Path to input FASTQ file")
+    parser.add_argument("-o", "--output", required=True, help="Name of output FASTQ file")
+    parser.add_argument("--gc", nargs=2, type=float, help="GC constraints (min max). Example: --gc 0.4 0.6", default=(0.0, 1.0))
+    parser.add_argument("--len", nargs=2, type=int, help="Length constraints (min max).", default=(0, 2**32))
+    parser.add_argument("--qual", type=float, help="Mean Phred quality cutoff.", default=0.0)
+
+    args = parser.parse_args()
+
+    try:
+        results = filter_fastq(
+            source_file=args.input,
+            destination_file=args.output,
+            gc_constraints=tuple(args.gc),
+            length_constraints=tuple(args.len),
+            quality_cutoff=args.qual
+        )
+        print("Filtering successful! Stats:")
+        for key, val in results.items():
+            print(f"{key}: {val}")
+    except Exception as e:
+        logging.error(f"Execution failed: {e}", exc_info=True)
+        print(f"Error: {e}")
+
+if __name__ == "__main__":
+    main()
