@@ -6,4 +6,5 @@ typing
 pathlib
 gzip
 statistics
-biopython
+biopython==1.83
+pytest==8.1.1
